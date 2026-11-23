@@ -442,7 +442,7 @@ final class TabStrip: NSObject {
         layer.mask = mask
     }
 
-    private static let soloRevealEdge: CGFloat = 14
+    private static var soloRevealEdge: CGFloat { TabChipView.fadeWidth }
 
     /// The soft edge runs off the end of the name, and the mask goes.
     private func revealSoloLabel() {
@@ -916,20 +916,26 @@ final class TabChipView: NSView, PointerHoverSyncing {
     private func shimmerLayers(reduce: Bool) -> [CALayer] {
         guard workingTextRect.width > 0 else { return [] }
         let text = CATextLayer()
-        text.string = Self.cut(Self.label(title: title, detail: detail, attributes: [.font: DS.Text.body(isActive ? .medium : .regular), .foregroundColor: NSColor.black]),
-                               title: title, detail: detail, width: workingTextRect.width)
-        text.truncationMode = .end
+        let label = Self.label(title: title, detail: detail, attributes: [.font: DS.Text.body(isActive ? .medium : .regular), .foregroundColor: NSColor.black])
+        text.string = label
+        text.truncationMode = .none
         text.contentsScale = backingScale
-        text.frame = CGRect(origin: .zero, size: workingTextRect.size)
+        text.frame = CGRect(origin: .zero, size: NSSize(width: max(workingTextRect.width, ceil(label.size().width) + 1), height: workingTextRect.height))
+        // Fading out at the end as the title does (`drawFaded`).
+        let holder = CALayer()
+        holder.frame = workingTextRect
+        holder.masksToBounds = true
+        if label.size().width > workingTextRect.width + 0.5 { holder.mask = Self.fadeMask(width: workingTextRect.width, height: workingTextRect.height) }
         let band = CAGradientLayer()
-        band.frame = workingTextRect
+        band.frame = CGRect(origin: .zero, size: workingTextRect.size)
+        holder.addSublayer(band)
         band.startPoint = CGPoint(x: 0, y: 0.5)
         band.endPoint = CGPoint(x: 1, y: 0.5)
         let light = NSColor.labelColor.cgColor
         band.colors = [NSColor.clear.cgColor, light, NSColor.clear.cgColor]
         band.locations = [0.4, 0.5, 0.6]
         band.mask = text
-        guard !reduce else { return [band] }
+        guard !reduce else { return [holder] }
         let sweep = CABasicAnimation(keyPath: "locations")
         sweep.fromValue = [-0.3, -0.15, 0]
         sweep.toValue = [1, 1.15, 1.3]
@@ -937,7 +943,44 @@ final class TabChipView: NSView, PointerHoverSyncing {
         sweep.repeatCount = .infinity
         Self.inStep(sweep)
         band.add(sweep, forKey: "shimmer")
-        return [band]
+        return [holder]
+    }
+
+    /// How far a title that doesn't fit fades out before the tab's end, in place of an ellipsis
+    /// (the owner, 2026-11-23: as Rex's tabs do).
+    static let fadeWidth: CGFloat = 18
+
+    /// Opaque, then clear over the last `fadeWidth`: a mask for a title `width` wide.
+    static func fadeMask(width: CGFloat, height: CGFloat) -> CAGradientLayer {
+        let mask = CAGradientLayer()
+        mask.frame = CGRect(x: 0, y: 0, width: width, height: height)
+        mask.startPoint = CGPoint(x: 0, y: 0.5)
+        mask.endPoint = CGPoint(x: 1, y: 0.5)
+        mask.colors = [NSColor.black.cgColor, NSColor.black.cgColor, NSColor.clear.cgColor]
+        mask.locations = [0, NSNumber(value: Double(max(0, 1 - fadeWidth / max(1, width)))), 1]
+        return mask
+    }
+
+    /// The text from `rect`'s origin: whole when it fits, else cut off at the rect's end behind
+    /// a soft edge, the letters running out rather than an ellipsis standing in for them.
+    static func drawFaded(_ text: NSAttributedString, in rect: NSRect) {
+        let size = text.size()
+        let whole = NSRect(x: rect.minX, y: rect.minY, width: ceil(size.width) + 1, height: rect.height)
+        guard size.width > rect.width + 0.5, let context = NSGraphicsContext.current?.cgContext else {
+            text.draw(with: whole, options: [.usesLineFragmentOrigin])
+            return
+        }
+        context.saveGState()
+        context.clip(to: rect)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        text.draw(with: whole, options: [.usesLineFragmentOrigin])
+        context.setBlendMode(.destinationOut)
+        let fade = min(fadeWidth, rect.width)
+        if let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: [NSColor.black.withAlphaComponent(0).cgColor, NSColor.black.cgColor] as CFArray, locations: [0, 1]) {
+            context.drawLinearGradient(gradient, start: CGPoint(x: rect.maxX - fade, y: 0), end: CGPoint(x: rect.maxX, y: 0), options: [])
+        }
+        context.endTransparencyLayer()
+        context.restoreGState()
     }
 
     /// Its shortcut ("⌘2") while the modifier is held (`TabShortcutHints`): it fades in over
@@ -1008,18 +1051,15 @@ final class TabChipView: NSView, PointerHoverSyncing {
     /// Where the title starts: after the icon when there is one.
     private var textX: CGFloat { Self.textX(hasIcon: dragIcon != nil) }
 
-    /// How much of the title the chip shows when it ends in an ellipsis, from where the title
-    /// starts to where the ellipsis does; nil when it's shown whole.
+    /// How much of the title the chip shows when it fades out before its end, from where the
+    /// title starts to where it's gone; nil when it's shown whole.
     var truncatedTitleWidth: CGFloat? {
-        let font = DS.Text.body(isActive ? .medium : .regular)
-        let whole = Self.label(title: title, detail: detail, attributes: [.font: font])
-        let shown = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
-        let cut = Self.cut(whole, title: title, detail: detail, width: shown)
-        // Whole: `cut` hands back the same label.
-        guard cut !== whole else { return nil }
-        let ellipsis = NSAttributedString(string: "\u{2026}", attributes: [.font: font]).size().width
-        return max(0, cut.size().width - ellipsis)
+        let whole = Self.label(title: title, detail: detail, attributes: [.font: DS.Text.body(isActive ? .medium : .regular)])
+        let shown = titleRoom
+        return whole.size().width > shown + 0.5 ? shown : nil
     }
+    /// Where the title may run: from its start to the trailing slot (the × or the dot).
+    private var titleRoom: CGFloat { max(0, bounds.width - textX - Self.trailingReserve - Self.flare) }
     static func textX(hasIcon: Bool) -> CGFloat { hasIcon ? flare + 10 + iconSize + 6 : flare + textInset }
     var dragPreview: (() -> NSImage?)?
     /// Holds the slot closed while the tab is torn out of the strip.
@@ -1089,11 +1129,11 @@ final class TabChipView: NSView, PointerHoverSyncing {
     /// The title, then the detail in a quieter color.
     static func label(title: String, detail: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
         var attributes = attributes
-        // Cut short, a title kept its letters' spacing: tightened to fit more before the
-        // ellipsis (the system's way), it no longer lined up with the whole name that takes
-        // over from it when the strip goes, and showed doubled (2026-11-05).
+        // Cut short, a title kept its letters' spacing: tightened to fit more (the system's way),
+        // it no longer lined up with the whole name that takes over from it when the strip goes,
+        // and showed doubled (2026-11-05). It runs on, and `drawFaded` cuts it.
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.lineBreakMode = .byClipping
         paragraph.allowsDefaultTighteningForTruncation = false
         attributes[.paragraphStyle] = paragraph
         let label = NSMutableAttributedString(string: title, attributes: attributes)
@@ -1103,40 +1143,6 @@ final class TabChipView: NSView, PointerHoverSyncing {
         quiet[.font] = DS.Text.caption()
         label.append(NSAttributedString(string: "  " + detail, attributes: quiet))
         return label
-    }
-
-    /// The label cut to `width` where the selected tab's (medium) title would be cut, whatever
-    /// weight `text` is in: selecting a tab no longer hid a few more of its letters, and leaving it
-    /// brought them back (the owner, 2026-11-12). Whole, it's returned as it is.
-    static func cut(_ text: NSAttributedString, title: String, detail: String, width: CGFloat) -> NSAttributedString {
-        let reference = label(title: title, detail: detail, attributes: [.font: DS.Text.body(.medium)])
-        guard reference.size().width > width + 0.5 else { return text }
-        let string = reference.string as NSString
-        // Cut points between whole characters (an emoji or accent isn't split).
-        var ends: [Int] = []
-        var index = 0
-        while index < string.length {
-            index = NSMaxRange(string.rangeOfComposedCharacterSequence(at: index))
-            ends.append(index)
-        }
-        let ellipsis = NSAttributedString(string: "\u{2026}", attributes: reference.attributes(at: 0, effectiveRange: nil))
-        func fits(_ count: Int) -> Bool {
-            let prefix = NSMutableAttributedString(attributedString: reference.attributedSubstring(from: NSRange(location: 0, length: count)))
-            prefix.append(ellipsis)
-            return prefix.size().width <= width
-        }
-        var low = 0, high = ends.count - 1, best = 0
-        while low <= high {
-            let middle = (low + high) / 2
-            if fits(ends[middle]) { best = ends[middle]; low = middle + 1 } else { high = middle - 1 }
-        }
-        // Trailing spaces before the ellipsis say nothing.
-        var count = min(best, text.length)
-        while count > 0, (text.string as NSString).character(at: count - 1) == 32 { count -= 1 }
-        guard count > 0 else { return NSAttributedString(string: "\u{2026}", attributes: text.attributes(at: 0, effectiveRange: nil)) }
-        let cut = NSMutableAttributedString(attributedString: text.attributedSubstring(from: NSRange(location: 0, length: count)))
-        cut.append(NSAttributedString(string: "\u{2026}", attributes: text.attributes(at: count - 1, effectiveRange: nil)))
-        return cut
     }
 
     /// The active tab is always in view: in an overflowing strip it's scrolled to, after layout
@@ -1268,11 +1274,11 @@ final class TabChipView: NSView, PointerHoverSyncing {
                 .foregroundColor: isDead ? tone.withAlphaComponent(0.35) : tone,
                 .font: DS.Text.body(isActive || drawsLifted ? .medium : .regular),
             ]
-            let maxWidth = max(0, bounds.width - textX - Self.trailingReserve - Self.flare)
-            let text = Self.cut(Self.label(title: title, detail: detail, attributes: attributes), title: title, detail: detail, width: maxWidth)
+            let maxWidth = titleRoom
+            let text = Self.label(title: title, detail: detail, attributes: attributes)
             let size = text.size()
-            let drawRect = NSRect(x: textX, y: (bounds.height - size.height) / 2, width: min(size.width, maxWidth) + 1, height: size.height)
-            text.draw(with: drawRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            let drawRect = NSRect(x: textX, y: (bounds.height - size.height) / 2, width: min(size.width + 1, maxWidth), height: size.height)
+            Self.drawFaded(text, in: drawRect)
             if isWorking, drawRect != workingTextRect {
                 workingTextRect = drawRect
                 DispatchQueue.main.async { [weak self] in self?.updateWorkingIndicator() }
@@ -1411,7 +1417,7 @@ final class TabChipView: NSView, PointerHoverSyncing {
         let frame = window.convertToScreen(convert(bounds, to: nil))
         let overlay = TabDragOverlay(chip: image, title: titleImage(), icon: cardIcon(), card: windowImage, sourceWindow: window, chipFrame: frame,
                                      grab: NSPoint(x: grabOffset.x / max(1, bounds.width), y: grabOffset.y),
-                                     chipTitleX: textX, chipIconCenterX: Self.iconCenterX)
+                                     chipTitleX: textX, chipIconCenterX: Self.iconCenterX, chipTitleRoom: liftedTitleRoom)
         overlay.onAbandoned = { [weak self] in self?.finishLostDrag() ?? false }
         overlay.show()
         self.overlay = overlay
@@ -1593,18 +1599,20 @@ final class TabChipView: NSView, PointerHoverSyncing {
         }
     }
 
-    /// The title alone, as the chip draws it lifted: the layer that travels into the card.
+    /// The title alone, whole (up to `TabDragOverlay.maxTitleWidth`): the layer that travels
+    /// into the card, which shows as much of it as the tab or the card has room for (the owner,
+    /// 2026-11-23: a torn-out card kept the tab's cut, though it had room for the whole name).
     func titleImage() -> NSImage {
         let attributes: [NSAttributedString.Key: Any] = [.font: DS.Text.body(.medium), .foregroundColor: NSColor.labelColor]
-        // Cut as the tab cuts it (draw): a tab of the strip's even width has less room than
-        // maxTextWidth, and the whole title laid over the dragged tab ran past its shape (2026-11-21).
-        let room = bounds.width > 0 ? min(Self.maxTextWidth, max(1, bounds.width - textX - Self.trailingReserve - Self.flare)) : Self.maxTextWidth
-        let text = Self.cut(Self.label(title: title, detail: "", attributes: attributes), title: title, detail: "", width: room)
-        let size = NSSize(width: ceil(min(text.size().width, room)) + 1, height: ceil(text.size().height))
+        let text = Self.label(title: title, detail: "", attributes: attributes)
+        let size = NSSize(width: ceil(min(text.size().width, TabDragOverlay.maxTitleWidth)) + 1, height: ceil(text.size().height))
         return Self.drawnNow(size: size, appearance: effectiveAppearance) {
-            text.draw(with: NSRect(origin: .zero, size: size), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            Self.drawFaded(text, in: NSRect(origin: .zero, size: size))
         }
     }
+
+    /// The room the title has in the tab, as it travels in the lifted chip.
+    var liftedTitleRoom: CGFloat { bounds.width > 0 ? min(Self.maxTextWidth, max(1, titleRoom)) : Self.maxTextWidth }
 
     /// The icon for the card's title bar: a symbol (Run's terminal) is a template, tinted to
     /// read as the title does, or it draws black in dark.
@@ -1708,6 +1716,12 @@ final class TabDragOverlay {
     /// which a clipping layer would cut off.
     private let clip = CALayer()
     private let titleSize: NSSize
+    /// What of the title shows: the tab's room in the chip, the card's in the card; past it the
+    /// title fades out, as in the tab.
+    private let titleMask = CAGradientLayer()
+    private let chipTitleRoom: CGFloat
+    /// The longest title a card shows before it fades.
+    static let maxTitleWidth: CGFloat = 520
     private let chipSize: NSSize
     private let hasCard: Bool
     /// Where the chip draws its title and icon, so the lifted chip shows both where the tab
@@ -1739,9 +1753,10 @@ final class TabDragOverlay {
     static let chipTitleInset: CGFloat = 16
 
     init(chip: NSImage, title: NSImage, icon: NSImage?, card cardImage: NSImage?, sourceWindow: NSWindow, chipFrame: NSRect, grab: NSPoint,
-         chipTitleX: CGFloat = TabDragOverlay.chipTitleInset, chipIconCenterX: CGFloat = 0) {
+         chipTitleX: CGFloat = TabDragOverlay.chipTitleInset, chipIconCenterX: CGFloat = 0, chipTitleRoom: CGFloat? = nil) {
         chipSize = chipFrame.size
         self.chipTitleX = chipTitleX
+        self.chipTitleRoom = chipTitleRoom ?? title.size.width
         self.chipIconCenterX = chipIconCenterX
         hasIcon = icon != nil
         titleSize = title.size
@@ -1780,7 +1795,12 @@ final class TabDragOverlay {
         clip.addSublayer(hairline)
         titleLayer.contents = title
         titleLayer.contentsScale = sourceWindow.backingScaleFactor
+        titleLayer.contentsGravity = .left
         titleLayer.bounds = CGRect(origin: .zero, size: title.size)
+        titleLayer.mask = titleMask
+        titleMask.startPoint = CGPoint(x: 0, y: 0.5)
+        titleMask.endPoint = CGPoint(x: 1, y: 0.5)
+        titleMask.colors = [NSColor.black.cgColor, NSColor.black.cgColor, NSColor.clear.cgColor]
         card.addSublayer(titleLayer)
         iconLayer.contents = icon
         iconLayer.contentsScale = sourceWindow.backingScaleFactor
@@ -1878,18 +1898,28 @@ final class TabDragOverlay {
         // layers rather than baked into the picture: scaled with the picture, the bar shrank
         // under a title placed for its full height (the owner, 2026-10-31: uneven above and below).
         let bar = Self.titleBarHeight
-        let titleAt = titlePosition(in: size, chip: chip)
+        let shownTitle = shownTitleWidth(in: size, chip: chip)
+        let titleAt = titlePosition(in: size, chip: chip, shown: shownTitle)
         let targets: [(CALayer, CGRect)] = [
             (card, CGRect(x: frame.minX, y: frame.minY, width: size.width, height: size.height)),
             (clip, CGRect(origin: .zero, size: size)),
             (chipLayer, CGRect(origin: .zero, size: size)),
             (cardLayer, CGRect(x: 0, y: 0, width: size.width, height: max(0, size.height - bar))),
             (hairline, CGRect(x: 0, y: max(0, size.height - bar), width: size.width, height: 1)),
-            (titleLayer, CGRect(x: titleAt.x - titleSize.width / 2, y: titleAt.y - titleSize.height / 2, width: titleSize.width, height: titleSize.height)),
+            (titleLayer, CGRect(x: titleAt.x - shownTitle / 2, y: titleAt.y - titleSize.height / 2, width: shownTitle, height: titleSize.height)),
+            (titleMask, CGRect(x: 0, y: 0, width: shownTitle, height: titleSize.height)),
             (iconLayer, chip || !hasCard
                 ? CGRect(x: chipIconCenterX - 7, y: size.height / 2 - 7, width: 14, height: 14)
-                : CGRect(x: titleAt.x - titleSize.width / 2 - 20, y: titleAt.y - 7, width: 14, height: 14)),
+                : CGRect(x: titleAt.x - shownTitle / 2 - 20, y: titleAt.y - 7, width: 14, height: 14)),
         ]
+        // Faded over its last points only when it doesn't fit; the fade's share of the mask
+        // changes at once, as the width springs.
+        let fades = titleSize.width > shownTitle + 1
+        let fadeStart = fades ? max(0, 1 - TabChipView.fadeWidth / max(1, shownTitle)) : 1
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        titleMask.locations = [0, NSNumber(value: Double(fadeStart)), 1]
+        CATransaction.commit()
         // What's on screen now, for the spring to start from.
         let shown = targets.map { layer, _ in ((layer.presentation() ?? layer).position, (layer.presentation() ?? layer).bounds.size) }
         let fromRadius = (card.presentation() ?? card).cornerRadius
@@ -1933,11 +1963,18 @@ final class TabDragOverlay {
 
     /// The title's centre in the card's own coordinates (origin bottom-left): at its inset in
     /// the chip, centred in the card's title bar beside the icon.
-    private func titlePosition(in size: NSSize, chip: Bool) -> CGPoint {
+    private func titlePosition(in size: NSSize, chip: Bool, shown: CGFloat) -> CGPoint {
         if chip || !hasCard {
-            return CGPoint(x: chipTitleX + titleSize.width / 2, y: size.height / 2)
+            return CGPoint(x: chipTitleX + shown / 2, y: size.height / 2)
         }
         return CGPoint(x: size.width / 2 + 10, y: size.height - Self.titleBarHeight / 2)
+    }
+
+    /// How much of the title shows: what the tab had room for in the chip; in the card, its
+    /// title bar less the icon beside it and a margin each side.
+    private func shownTitleWidth(in size: NSSize, chip: Bool) -> CGFloat {
+        let room = chip || !hasCard ? chipTitleRoom : size.width - 2 * (20 + 24)
+        return max(1, min(titleSize.width, room))
     }
 
     private func crossfade(toCard: Bool) {

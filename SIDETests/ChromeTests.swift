@@ -376,18 +376,28 @@ final class IncreaseContrastTests: XCTestCase {
         }
     }
 
-    /// A long tab title shows the same letters selected or not: cut where the selected (medium)
-    /// title would be, whatever its weight (the owner, 2026-11-12).
+    /// A long tab title fades out at the tab's end, with no ellipsis, and shows as far selected
+    /// or not (the owner, 2026-11-12 and 2026-11-23); a title that fits is drawn whole.
     @MainActor
-    func testATabTitleKeepsItsLettersWhenSelected() {
-        let title = "Refactoring the session registry so every terminal reports its state"
-        let width: CGFloat = 200
-        let regular = TabChipView.cut(TabChipView.label(title: title, detail: "", attributes: [.font: DS.Text.body(.regular)]), title: title, detail: "", width: width)
-        let medium = TabChipView.cut(TabChipView.label(title: title, detail: "", attributes: [.font: DS.Text.body(.medium)]), title: title, detail: "", width: width)
-        XCTAssertEqual(regular.string, medium.string)
-        XCTAssertTrue(regular.string.hasSuffix("\u{2026}"))
-        XCTAssertLessThanOrEqual(medium.size().width, width)
-        let short = TabChipView.label(title: "zsh", detail: "", attributes: [.font: DS.Text.body(.regular)])
-        XCTAssertTrue(TabChipView.cut(short, title: "zsh", detail: "", width: width) === short, "a title that fits is left whole")
+    func testALongTabTitleFadesOutAtTheTabsEnd() {
+        let chip = TabChipView(frame: NSRect(x: 0, y: 0, width: TabStrip.minTabWidth, height: TabChipView.height))
+        chip.title = "Refactoring the session registry so every terminal reports its state"
+        let room = try! XCTUnwrap(chip.truncatedTitleWidth)
+        chip.isActive = true
+        XCTAssertEqual(chip.truncatedTitleWidth, room, "the same room selected")
+        chip.title = "zsh"
+        XCTAssertNil(chip.truncatedTitleWidth, "whole")
+
+        // Drawn: opaque letters early on, nothing at the very end of the room.
+        let long = TabChipView.label(title: String(repeating: "W", count: 60), detail: "", attributes: [.font: DS.Text.body(.medium), .foregroundColor: NSColor.black])
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 200, pixelsHigh: 20, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        TabChipView.drawFaded(long, in: NSRect(x: 0, y: 0, width: 100, height: 20))
+        NSGraphicsContext.restoreGraphicsState()
+        func inked(_ x: Int) -> Bool { (0..<20).contains { rep.colorAt(x: x, y: $0)!.alphaComponent > 0.5 } }
+        XCTAssertTrue((10..<60).contains(where: inked), "letters before the fade")
+        XCTAssertFalse((97..<100).contains(where: inked), "gone by the end")
+        XCTAssertFalse((100..<200).contains(where: inked), "nothing past the room")
     }
 }

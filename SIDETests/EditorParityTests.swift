@@ -620,6 +620,34 @@ final class EditorParityTests: XCTestCase {
         XCTAssertFalse(overlay.isOnScreenForTesting, "and then gone")
     }
 
+    /// 2026-11-23, the owner: torn out, a long name kept the tab's cut though the card had room
+    /// for it. Lifted, the title shows what the tab did; in the card, as much as fits there.
+    func testATornOutCardShowsMoreOfALongName() throws {
+        let name = "a-much-longer-file-name-than-any-tab-has-room-for.swift"
+        _ = try open(name, "let a = 1\n")
+        _ = try open("b.swift", "let b = 1\n")
+        let chip = try XCTUnwrap(make.tabStripForTesting.chips.first { $0.title == name })
+        make.view.layoutSubtreeIfNeeded()
+        let start = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
+        chip.mouseDown(with: mouse(.leftMouseDown, start))
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 6)))
+        let overlay = try XCTUnwrap(chip.overlayForTesting)
+        let lifted = overlay.titleFrameForTesting.width
+        XCTAssertEqual(lifted, chip.liftedTitleRoom, accuracy: 0.5, "in the chip: the tab's room")
+
+        chip.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: start.x, y: start.y - 120)))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        XCTAssertTrue(overlay.isShowingCardForTesting)
+        let card = overlay.cardFrameForTesting
+        let title = overlay.titleFrameForTesting
+        XCTAssertGreaterThan(title.width, lifted + 60, "the card shows more of it")
+        XCTAssertGreaterThanOrEqual(title.minX, card.minX, "inside the card")
+        XCTAssertLessThanOrEqual(title.maxX, card.maxX)
+        chip.mouseUp(with: mouse(.leftMouseUp, NSPoint(x: start.x, y: start.y)))
+        let gone = Date().addingTimeInterval(2)
+        while Date() < gone, overlay.isOnScreenForTesting { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+    }
+
     /// 2026-10-31, the owner: after a tab was dropped outside its window, its card stayed over
     /// every app. The card goes once the landing is over, window or not.
     func testADroppedCardLeavesTheScreen() throws {
