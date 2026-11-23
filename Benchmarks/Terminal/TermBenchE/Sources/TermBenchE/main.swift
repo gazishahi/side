@@ -6,12 +6,37 @@ import SideTerminal
 import Synchronization
 
 /// The emulator's screen as AlloyTerminal's grid, as Side's AlloyTerminalSurface maps it.
+/// Where setup E's CPU goes in sessions mode (TERMBENCH_THREADS=1): thread CPU around each kind of
+/// work, in nanoseconds. The reader threads are dedicated, so their total is their CPU clock at
+/// their last batch.
+enum Account {
+    static let parseShown = Atomic<UInt64>(0), parseHidden = Atomic<UInt64>(0), snapshot = Atomic<UInt64>(0)
+    static let mainHop = Atomic<UInt64>(0), readers = Mutex<[ObjectIdentifier: UInt64]>([:])
+    static var on: Bool { ProcessInfo.processInfo.environment["TERMBENCH_THREADS"] != nil }
+    static func cpu() -> UInt64 { clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) }
+    @discardableResult static func time<T>(_ into: borrowing Atomic<UInt64>, _ body: () -> T) -> T {
+        let start = cpu(); defer { into.add(cpu() - start, ordering: .relaxed) }
+        return body()
+    }
+    static func report(processCPU: Double, mainCPU: Double) {
+        let s = { (v: UInt64) in String(format: "%.3f", Double(v) / 1e9) }
+        let reader = readers.withLock { $0.values.reduce(0, +) }
+        let known = Double(parseShown.load(ordering: .relaxed) + parseHidden.load(ordering: .relaxed) + snapshot.load(ordering: .relaxed) + reader) / 1e9 + mainCPU
+        print("{\"account\":{\"readers\":\(s(reader)),\"parseShown\":\(s(parseShown.load(ordering: .relaxed))),\"parseHidden\":\(s(parseHidden.load(ordering: .relaxed))),\"snapshot\":\(s(snapshot.load(ordering: .relaxed))),\"main\":\(String(format: "%.3f", mainCPU)),\"mainHop\":\(s(mainHop.load(ordering: .relaxed))),\"rest\":\(String(format: "%.3f", processCPU - known))}}")
+        fflush(stdout)
+    }
+}
+
 final class ScreenSource: TerminalGridSource, @unchecked Sendable {
     // @unchecked: used only on the render thread.
     let reader: ScreenReader
     init(terminal: Terminal) { reader = ScreenReader(terminal: terminal) }
 
     func snapshot(into grid: TerminalGrid) -> Bool {
+        Account.time(Account.snapshot) { snapshotTimed(into: grid) }
+    }
+
+    private func snapshotTimed(into grid: TerminalGrid) -> Bool {
         guard reader.update() else { return false }
         Self.copyImages(reader, into: grid)
         let columns = grid.columns
@@ -342,22 +367,29 @@ extension SessionsE {
         let view = view
         let environment = ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
         var processes: [PseudoTerminalProcess] = []
+        // TERMBENCH_NODRAW=1: nothing drawn, so the rest of the work can be told from drawing.
+        let draws = ProcessInfo.processInfo.environment["TERMBENCH_NODRAW"] != "1"
         for (i, terminal) in terminals.enumerated() {
-            let shown = i == 0
+            let shown = i == 0 && draws
             let inFlight = Count()
             let parseQueue = DispatchQueue(label: "termbench.e.parse.\(i)", qos: .userInteractive)
             let process = PseudoTerminalProcess()
             process.isConsumerBusy = { inFlight.value.load(ordering: .relaxed) > 0 }
+            let readerID = ObjectIdentifier(inFlight)
             process.onOutput = { bytes in
                 let copy = Array(bytes)
                 inFlight.value.add(1, ordering: .relaxed)
+                let readerCPU = Account.cpu()
+                Account.readers.withLock { $0[readerID] = readerCPU }
                 DispatchQueue.main.async {
+                    let hop = Account.cpu()
                     let again = Array(copy) // the surface's display copies once more
                     parseQueue.async {
-                        terminal.feed(again)
+                        if shown { Account.time(Account.parseShown) { terminal.feed(again) } } else { Account.time(Account.parseHidden) { terminal.feed(again) } }
                         if shown { view.setNeedsFrame() }
                         inFlight.value.subtract(1, ordering: .relaxed)
                     }
+                    Account.mainHop.add(Account.cpu() - hop, ordering: .relaxed)
                 }
             }
             process.onExit = { _ in
@@ -378,6 +410,7 @@ extension SessionsE {
             processes.append(process)
         }
         keepAlive = processes
+        if Account.on { Run.onReport = { Account.report(processCPU: $0, mainCPU: $1) } }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             Run.shared.begin()
             for p in processes { p.write(ArraySlice(Array("\n".utf8))) }

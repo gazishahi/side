@@ -166,6 +166,8 @@ public final class Run {
     public var options = Options.parse()
     public var frames = -1
     public var grid = ""
+    /// Called with the run's process and main-thread CPU after its line is printed.
+    public nonisolated(unsafe) static var onReport: ((Double, Double) -> Void)?
     private var start = 0.0, mainStart = 0.0, cpuStart = 0.0
     private var finished = false
 
@@ -173,6 +175,7 @@ public final class Run {
         start = Metrics.now()
         mainStart = Metrics.mainThreadCPU()
         cpuStart = Metrics.processCPU()
+        ThreadCPU.start()
         MainProbe.start()
         MainBusy.start()
         // A setup that never finishes still reports.
@@ -208,6 +211,8 @@ public final class Run {
         print(json)
         fflush(stdout)
         ReaderStats.report()
+        ThreadCPU.report(processCPU: m.cpu)
+        Run.onReport?(m.cpu, m.main)
         // --hold keeps the window up for a screenshot.
         let hold = Double(ProcessInfo.processInfo.environment["TERMBENCH_HOLD"] ?? "0") ?? 0
         if hold > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + hold) { exit(0) } } else { exit(0) }
@@ -615,5 +620,77 @@ public enum Latency {
         let screenH = NSScreen.screens[0].frame.height
         return CGRect(x: onScreen.minX + CGFloat(col) * cellSize.width, y: screenH - onScreen.minY + CGFloat(row) * cellSize.height,
                       width: cellSize.width, height: cellSize.height)
+    }
+}
+
+
+// MARK: - CPU by thread (TERMBENCH_THREADS=1)
+
+/// Each live thread's CPU since `begin`, grouped by its name or its dispatch queue's label, so a
+/// run's process CPU can be split into reader, parse, draw and main. Threads that ended before the
+/// report are counted as "(ended)": the process total less what the live ones used.
+enum ThreadCPU {
+    nonisolated(unsafe) private static var baseline: [thread_t: Double] = [:]
+    static var enabled: Bool { ProcessInfo.processInfo.environment["TERMBENCH_THREADS"] != nil }
+
+    static func start() {
+        guard enabled else { return }
+        baseline = Dictionary(threads().map { ($0.port, $0.cpu) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    static func report(processCPU: Double) {
+        guard enabled else { return }
+        var byName: [String: Double] = [:]
+        var live = 0.0
+        for thread in threads() {
+            let used = thread.cpu - (baseline[thread.port] ?? 0)
+            live += used
+            byName[thread.name, default: 0] += used
+        }
+        byName["(ended)"] = max(0, processCPU - live)
+        let fields = byName.sorted { $0.value > $1.value }.filter { $0.value >= 0.001 }
+            .map { "\"\($0.key.replacingOccurrences(of: "\"", with: "'"))\":\(String(format: "%.3f", $0.value))" }
+        print("{\"threads\":{\(fields.joined(separator: ","))}}")
+        fflush(stdout)
+    }
+
+    private static func threads() -> [(port: thread_t, cpu: Double, name: String)] {
+        var list: thread_act_array_t?
+        var count: mach_msg_type_number_t = 0
+        guard task_threads(mach_task_self_, &list, &count) == KERN_SUCCESS, let list else { return [] }
+        defer { vm_deallocate(mach_task_self_, vm_address_t(UInt(bitPattern: list)), vm_size_t(Int(count) * MemoryLayout<thread_t>.stride)) }
+        var result: [(thread_t, Double, String)] = []
+        for i in 0..<Int(count) {
+            let port = list[i]
+            var info = thread_basic_info()
+            var size = mach_msg_type_number_t(MemoryLayout<thread_basic_info>.size / MemoryLayout<integer_t>.size)
+            let ok = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) { thread_info(port, thread_flavor_t(THREAD_BASIC_INFO), $0, &size) }
+            }
+            guard ok == KERN_SUCCESS else { continue }
+            let cpu = Double(info.user_time.seconds) + Double(info.user_time.microseconds) / 1e6
+                + Double(info.system_time.seconds) + Double(info.system_time.microseconds) / 1e6
+            result.append((port, cpu, name(port)))
+        }
+        return result
+    }
+
+    private static func name(_ port: thread_t) -> String {
+        if let pthread = pthread_from_mach_thread_np(port) {
+            var buffer = [CChar](repeating: 0, count: 64)
+            if pthread_getname_np(pthread, &buffer, buffer.count) == 0, buffer[0] != 0 { return String(cString: buffer) }
+        }
+        // A dispatch worker: the queue it's running, if any.
+        var info = thread_identifier_info()
+        var size = mach_msg_type_number_t(MemoryLayout<thread_identifier_info>.size / MemoryLayout<integer_t>.size)
+        let ok = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) { thread_info(port, thread_flavor_t(THREAD_IDENTIFIER_INFO), $0, &size) }
+        }
+        if ok == KERN_SUCCESS, info.dispatch_qaddr != 0,
+           let queue = UnsafePointer<UnsafeRawPointer?>(bitPattern: UInt(info.dispatch_qaddr))?.pointee {
+            let label = String(cString: __dispatch_queue_get_label(unsafeBitCast(queue, to: DispatchQueue.self)))
+            if !label.isEmpty { return "queue " + label }
+        }
+        return "(unnamed)"
     }
 }
