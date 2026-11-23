@@ -620,6 +620,25 @@ final class EditorParityTests: XCTestCase {
         XCTAssertFalse(overlay.isOnScreenForTesting, "and then gone")
     }
 
+    /// 2026-11-23, the owner: "every so often, when I go back to a project, I see no files
+    /// opened in Editor." A branch switch closed the tabs and wrote an empty list over them, and a
+    /// branch with no list of its own opened none. Now the tabs survive both.
+    func testOpenFilesComeBackAcrossABranchSwitch() throws {
+        make.loadProject(at: root)
+        _ = try open("a.swift", "let a = 1\n")
+        _ = try open("b.swift", "let b = 1\n")
+        func waitForTabs(_ expected: [String]) {
+            let deadline = Date().addingTimeInterval(10)
+            while Date() < deadline, make.openTabTitlesForTesting != expected { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        }
+        make.reloadForTrackSwitch(trackKey: "feature", workingDirectory: root)
+        waitForTabs(["a.swift", "b.swift"])
+        XCTAssertEqual(make.openTabTitlesForTesting, ["a.swift", "b.swift"], "a branch with no list of its own: the project's")
+        make.reloadForTrackSwitch(trackKey: nil, workingDirectory: root)
+        waitForTabs(["a.swift", "b.swift"])
+        XCTAssertEqual(make.openTabTitlesForTesting, ["a.swift", "b.swift"], "and back, nothing wiped")
+    }
+
     /// 2026-11-23, the owner: torn out, a long name kept the tab's cut though the card had room
     /// for it. Lifted, the title shows what the tab did; in the card, as much as fits there.
     func testATornOutCardShowsMoreOfALongName() throws {

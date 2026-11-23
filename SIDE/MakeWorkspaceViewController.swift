@@ -1587,19 +1587,24 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         guard soleFile == nil, !tabMemorySuspended else { return }
         var map = HeronDefaults.store.dictionary(forKey: openTabsByProjectKey) as? [String: [String]] ?? [:]
         let paths = openTabs.filter { !$0.isUntitled }.map(\.url.path)
-        if paths.isEmpty {
-            map.removeValue(forKey: compositeMemoryKey(for: project))
-        } else {
-            map[compositeMemoryKey(for: project)] = paths
+        // The branch's own list, and the project's, which is whatever was open last on any of
+        // its branches: read when the branch has none of its own.
+        for key in Set([compositeMemoryKey(for: project), Self.projectMemoryKey(for: project)]) {
+            if paths.isEmpty { map.removeValue(forKey: key) } else { map[key] = paths }
         }
         HeronDefaults.store.set(map, forKey: openTabsByProjectKey)
     }
 
+    /// The branch's list, else the project's. Kept by branch alone, a project read under another
+    /// branch name than it was written under (the branch Side found changed, or none was found
+    /// yet) opened with no files (the owner, 2026-11-23).
     private func rememberedOpenTabs(forProject project: URL) -> [URL] {
         guard let map = HeronDefaults.store.dictionary(forKey: openTabsByProjectKey) as? [String: [String]],
-              let paths = map[compositeMemoryKey(for: project)] else { return [] }
+              let paths = map[compositeMemoryKey(for: project)] ?? map[Self.projectMemoryKey(for: project)] else { return [] }
         return paths.map { URL(fileURLWithPath: $0) }
     }
+
+    private static func projectMemoryKey(for project: URL) -> String { "\(project.path)#" }
 
     /// Syncs the open tab for `url` to content the applier has *already written to disk*, and
     /// returns whether there was one.
@@ -1742,7 +1747,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                 if let window = self.view.window { self.showAlert(title: "Can't find this project", message: "\(url.lastPathComponent) no longer exists at \(url.path).", window: window) }
                 return
             }
-            self.closeAllTabsImmediately()
+            self.putAwayTabsForReload()
             self.loadProject(at: url)
         }
     }
@@ -1772,7 +1777,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                     switchProject(url)
                     return
                 }
-                self.closeAllTabsImmediately()
+                self.putAwayTabsForReload()
                 self.loadProject(at: url)
             }
         }
@@ -1811,7 +1816,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
                             self.showAlert(title: "Couldn't initialize git", message: initResult.success ? commit.output : initResult.output, window: window)
                             return
                         }
-                        self.closeAllTabsImmediately()
+                        self.putAwayTabsForReload()
                         self.loadProject(at: url)
                     }
                 }
@@ -1893,6 +1898,12 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         pdfView.backgroundColor = Self.editorBackground
         markdownPreviewView.backgroundColor = Self.editorBackground
         markdownPreviewScroll.backgroundColor = Self.editorBackground
+        // Over a translucent editor the viewers draw no background at all. Drawing a clear one,
+        // the preview's text view still called itself opaque, and what showed under the text was
+        // whatever its layer held: solid on screen, green in a torn-out card (the owner, 2026-11-23).
+        let draws = !DS.Translucency.includesEditor
+        for scroll in [imageScroll, csvScroll, markdownPreviewScroll] { scroll.drawsBackground = draws }
+        markdownPreviewView.drawsBackground = draws
     }
 
     /// Settings → Languages changed: the servers start again as now chosen, and every open
@@ -2287,7 +2298,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     /// so they're closed outright rather than left open, then the new track's own remembered file
     /// (if any) is restored.
     func reloadForTrackSwitch(trackKey: String?, workingDirectory: URL) {
-        closeAllTabsImmediately()
+        putAwayTabsForReload()
         currentTrackKey = trackKey
         retarget(to: workingDirectory)
         reindexAndRestoreLastFile()
@@ -3117,6 +3128,13 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
     func putAwayTabsForProjectSwitch() {
         // Held off until the next project's tabs are back (`reindexAndRestoreLastFile`): closing
         // these wrote an empty list over this project's, and the next one's empty start over its.
+        putAwayTabsForReload()
+    }
+
+    /// Closed for what comes next (another project, another branch), not by the person: the
+    /// list isn't written until the next one's tabs are back (`reindexAndRestoreLastFile`).
+    /// Closing them on a branch switch wrote an empty list over the one just left.
+    private func putAwayTabsForReload() {
         tabMemorySuspended = true
         closeAllTabsImmediately()
     }
