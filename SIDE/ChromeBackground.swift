@@ -42,7 +42,7 @@ final class WindowBackdrop: NSView {
         // Behind the window, and active whether or not the window is key: an inactive window
         // going grey would read as a different surface, not a background window.
         blur.blendingMode = .behindWindow
-        blur.material = DS.Translucency.material
+        blur.material = DS.Translucency.material(dark: DS.Appearance.isDark)
         blur.state = .active
         tintView.wantsLayer = true
         for view in [blur, tintView] {
@@ -64,10 +64,16 @@ final class WindowBackdrop: NSView {
         apply()
     }
 
+    /// Light and dark take different materials, and the tint resolves in this view's appearance.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        apply()
+    }
+
     @objc private func apply() {
         let translucent = DS.Translucency.isOn
         blur.isHidden = !translucent
-        blur.material = DS.Translucency.material
+        blur.material = DS.Translucency.material(dark: effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
         tintView.bindLayerBackground(translucent ? DS.Translucency.tint : ChromeBackground.color)
         if let window { DS.Translucency.apply(to: window) }
     }

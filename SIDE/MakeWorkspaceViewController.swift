@@ -597,6 +597,8 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
 
         csvScroll.backgroundColor = Self.editorBackground
         csvScroll.drawsBackground = true
+        // The table fills its own rows otherwise, solid over a translucent editor.
+        sheetView.table.backgroundColor = Self.editorBackground
         sheetView.isHidden = true
         sheetView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(sheetView)
@@ -1887,6 +1889,7 @@ final class MakeWorkspaceViewController: NSViewController, NSSearchFieldDelegate
         minimap.backgroundColor = Self.editorBackground
         imageScroll.backgroundColor = Self.editorBackground
         csvScroll.backgroundColor = Self.editorBackground
+        sheetView.table.backgroundColor = Self.editorBackground
         pdfView.backgroundColor = Self.editorBackground
         markdownPreviewView.backgroundColor = Self.editorBackground
         markdownPreviewScroll.backgroundColor = Self.editorBackground

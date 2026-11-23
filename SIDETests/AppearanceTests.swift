@@ -170,6 +170,34 @@ final class AppearanceTests: XCTestCase {
         XCTAssertNil(NSApp.appearance)
     }
 
+    /// Dark, then Light: the change is told, and a layer bound to a token in a window ends up
+    /// in the new appearance's colour. A guard: the case seen (Dark back to Match System left the
+    /// window's background dark, 2026-11-23) didn't happen here.
+    func testAChangeOfPreferenceIsToldAndLayersFollowIt() {
+        let original = DS.Appearance.preference
+        defer { DS.Appearance.preference = original }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let view = NSView(frame: window.contentView!.bounds)
+        view.wantsLayer = true
+        window.contentView!.addSubview(view)
+        view.bindLayerBackground(DS.Color.canvas)
+        func brightness() -> CGFloat { NSColor(cgColor: view.layer!.backgroundColor!)!.usingColorSpace(.sRGB)!.redComponent }
+
+        DS.Appearance.preference = .dark
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertLessThan(brightness(), 0.3)
+
+        var told = 0
+        let observer = NotificationCenter.default.addObserver(forName: DS.Appearance.didChangeNotification, object: nil, queue: nil) { _ in told += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        DS.Appearance.preference = .light
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertGreaterThan(told, 0)
+        XCTAssertGreaterThan(brightness(), 0.8)
+    }
+
     func testTerminalColorsComeFromTheTokens() {
         let original = DS.Appearance.preference
         defer { DS.Appearance.preference = original }

@@ -719,11 +719,14 @@ enum DS {
 
         /// The system's own glass for a window's body: it brings the saturation and the light
         /// that make it read as glass. A flat canvas tone laid thickly over a plain blur (how this
-        /// began) read as a muddy sheet, not glass (the owner, 2026-11-12).
-        static let material: NSVisualEffectView.Material = .sidebar
+        /// began) read as a muddy sheet, not glass (the owner, 2026-11-12). The sidebar's in dark;
+        /// in light it's nearly white, about a seventh of what's behind coming through, and with
+        /// the tone over it the window read as plain grey (the owner, 2026-11-23). The menu's lets
+        /// through in light about what the sidebar's does in dark.
+        static func material(dark: Bool) -> NSVisualEffectView.Material { dark ? .sidebar : .menu }
         /// How much of the canvas tone lies over the material: a breath, to keep secondary labels
         /// legible over a loud wallpaper without flattening the glass.
-        static func tintOpacity(dark: Bool) -> CGFloat { dark ? 0.3 : 0.25 }
+        static func tintOpacity(dark: Bool) -> CGFloat { dark ? 0.3 : 0.12 }
         /// The terminal's and the editor's own backgrounds over the glass: none. Their text sits
         /// on the window's glass, one surface with the bars and tabs around it; a background of
         /// their own, even faint, drew a second sheet inside the window (the owner, 2026-11-12).
@@ -1620,7 +1623,19 @@ extension DS {
             set {
                 HeronDefaults.store.set(newValue.rawValue, forKey: preferenceKey)
                 apply()
+                MainActor.assumeIsolated { settle() }
             }
+        }
+
+        /// After the preference changes, the flip is looked for now, on the next turn and a moment
+        /// later, not only when the app's appearance reports a change: Dark back to Match System
+        /// left the editor and the window's background dark over a light terminal (the owner,
+        /// 2026-11-23; not reproduced here). Each look tells only on a real flip.
+        @MainActor
+        private static func settle() {
+            appearanceMayHaveChanged()
+            DispatchQueue.main.async { appearanceMayHaveChanged() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { appearanceMayHaveChanged() }
         }
 
         static var isDark: Bool {
@@ -1670,11 +1685,20 @@ extension DS {
             }
         }
 
+        /// The app's appearance flipped: what holds a resolved colour is told, and told again on
+        /// the next turn. A layer resolves in its own view's appearance, which follows the app's
+        /// only as its window next updates; one told in between kept the old colour.
         @MainActor
         private static func appearanceMayHaveChanged() {
             let dark = isDark
             guard dark != lastKnownIsDark else { return }
             lastKnownIsDark = dark
+            tell()
+            DispatchQueue.main.async { if isDark == dark { tell() } }
+        }
+
+        @MainActor
+        private static func tell() {
             LayerBindings.reapplyAll()
             NotificationCenter.default.post(name: didChangeNotification, object: nil)
         }

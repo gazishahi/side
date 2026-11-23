@@ -1264,7 +1264,11 @@ final class SheetView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var background: SheetColor.RGB {
         var resolved = SheetColor.RGB(0xFFFFFF)
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            if let color = (scrollView.drawsBackground ? scrollView.backgroundColor : table.backgroundColor).usingColorSpace(.sRGB) {
+            var behind = scrollView.drawsBackground ? scrollView.backgroundColor : table.backgroundColor
+            // Clear over the window's glass (Translucent background): the canvas tone is near
+            // enough what shows, and a clear colour's components read as black.
+            if behind.alphaComponent < 0.5 { behind = DS.Color.canvas }
+            if let color = behind.usingColorSpace(.sRGB) {
                 resolved = SheetColor.RGB(r: color.redComponent, g: color.greenComponent, b: color.blueComponent)
             }
         }
