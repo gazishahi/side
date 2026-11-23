@@ -245,7 +245,9 @@ class GlassPill: NSView {
         markSlotWidth = markSlot.widthAnchor.constraint(equalToConstant: ProgressRing.diameter)
         markSlotHeight = markSlot.heightAnchor.constraint(equalToConstant: ProgressRing.diameter)
         NSLayoutConstraint.activate([markSlotWidth!, markSlotHeight!])
-        for view in [markSlot, label, countBadge] as [NSView] { row.addArrangedSubview(view) }
+        // In the middle: the room kept for a longer title (`reserveWidth`) falls evenly either
+        // side, not all after the words (the owner, 2026-11-23: uneven spacing).
+        row.setViews([markSlot, label, countBadge], in: .center)
         // The mark belongs to its title: closer to it than the pill's other pieces are.
         row.setCustomSpacing(DS.Spacing.xs + 2, after: markSlot)
         addSubview(row)
@@ -285,12 +287,24 @@ class GlassPill: NSView {
     }
 
     func reserveWidth(for title: String?) {
-        // Measured as the label measures itself, padding included.
+        // Measured as the label measures itself, padding included, with the mark and the count
+        // beside it: the room is kept for the whole row, which centres what it holds.
         let width = title.map { title -> CGFloat in
             let probe = NSTextField(labelWithString: title)
             probe.font = label.font
             // A few points over: the label measured a little wider on screen than off it.
-            return min(ceil(probe.intrinsicContentSize.width) + 6, Self.maxTitleWidth)
+            let words = min(ceil(probe.intrinsicContentSize.width) + 6, Self.maxTitleWidth)
+            // Everything else showing in the row (the mark, the count, the activity pill's
+            // project marks), and the space after each but the last.
+            let shown = row.views(in: .center).filter { !$0.isHidden }
+            let others = shown.filter { $0 !== label }.reduce(CGFloat(0)) { sum, view in
+                sum + (view === markSlot ? markSize : view.fittingSize.width)
+            }
+            let gaps = shown.dropLast().reduce(CGFloat(0)) { sum, view in
+                let custom = row.customSpacing(after: view)
+                return sum + (custom == NSStackView.useDefaultSpacing ? row.spacing : custom)
+            }
+            return words + others + gaps
         } ?? 0
         guard width != reservedWidth.constant || reservedWidth.isActive != (width > 0) else { return }
         reservedWidth.constant = width
@@ -298,7 +312,7 @@ class GlassPill: NSView {
     }
     // Below the window's own size, as the title's resistance is: room kept, never room taken.
     private lazy var reservedWidth: NSLayoutConstraint = {
-        let constraint = label.widthAnchor.constraint(greaterThanOrEqualToConstant: 0)
+        let constraint = row.widthAnchor.constraint(greaterThanOrEqualToConstant: 0)
         constraint.priority = NSLayoutConstraint.Priority(470)
         return constraint
     }()

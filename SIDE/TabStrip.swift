@@ -884,6 +884,8 @@ final class TabChipView: NSView, PointerHoverSyncing {
     private var workingLayers: [CALayer] = []
     /// Where the title was last drawn: the shimmer follows it.
     private var workingTextRect = NSRect.zero
+    /// What the shimmer was made for: the weight and the words.
+    private var workingText = ""
     var isShowingWorkingLightForTesting: Bool { !workingLayers.isEmpty }
 
     private func updateWorkingIndicator() {
@@ -1279,8 +1281,13 @@ final class TabChipView: NSView, PointerHoverSyncing {
             let size = text.size()
             let drawRect = NSRect(x: textX, y: (bounds.height - size.height) / 2, width: min(size.width + 1, maxWidth), height: size.height)
             Self.drawFaded(text, in: drawRect)
-            if isWorking, drawRect != workingTextRect {
+            // Made again whenever what it lights changes, not only where: a long title fills the
+            // same room selected or not, and the light kept the other weight's letters over the
+            // title's, doubled (the owner, 2026-11-23).
+            let drawn = "\(isActive) \(title) \(detail)"
+            if isWorking, drawRect != workingTextRect || drawn != workingText {
                 workingTextRect = drawRect
+                workingText = drawn
                 DispatchQueue.main.async { [weak self] in self?.updateWorkingIndicator() }
             }
         }
@@ -1585,8 +1592,10 @@ final class TabChipView: NSView, PointerHoverSyncing {
         return NSImage(size: body, flipped: false) { rect in
             DS.Color.raised.setFill()
             rect.fill()
+            // Only an opaque corner: a translucent stage's is clear, and its colour channels
+            // are nothing to fill with.
             if let rep = content.representations.first as? NSBitmapImageRep ?? content.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)),
-               let below = rep.colorAt(x: 2, y: rep.pixelsHigh - 2) {
+               let below = rep.colorAt(x: 2, y: rep.pixelsHigh - 2), below.alphaComponent > 0.99 {
                 below.setFill()
                 rect.fill()
             }

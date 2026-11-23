@@ -305,7 +305,7 @@ final class ActivityPill {
         projectMarks.translatesAutoresizingMaskIntoConstraints = false
         projectMarks.imageScaling = .scaleNone
         projectMarks.isHidden = true
-        view.row.insertArrangedSubview(projectMarks, at: 0)
+        view.row.insertView(projectMarks, at: 0, in: .center)
         view.setShown(false, animated: false)
         view.onClick = { [weak self] in self?.togglePopover() }
         observer = NotificationCenter.default.addObserver(forName: ActivityCenter.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -324,6 +324,8 @@ final class ActivityPill {
 
     func refresh(animated: Bool) {
         let items = ActivityCenter.shared.items
+        // First: the room kept for the words counts the marks beside them.
+        setProjects(ActivityCenter.projects(of: items, except: currentProject?()))
         if let first = items.first {
             let mark: GlassPill.Mark = first.state == .working ? .ring(fraction: nil) : .dot(first.state.status)
             view.set(title: Self.summary(items), mark: mark)
@@ -334,7 +336,6 @@ final class ActivityPill {
                 .max { GlassPill.measure($0) < GlassPill.measure($1) })
             view.toolTip = items.map { "\($0.title) \u{2014} \($0.stateWord), \($0.place)" + ($0.reason.isEmpty ? "" : ": \($0.reason)") }.joined(separator: "\n")
         }
-        setProjects(ActivityCenter.projects(of: items, except: currentProject?()))
         view.setShown(!items.isEmpty, animated: animated)
         if items.isEmpty { popover?.close() }
         (popover?.contentViewController as? ActivityListViewController)?.reload()
